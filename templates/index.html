@@ -1,298 +1,385 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <title>Voice → (KO)설명 & (EN)프롬프트 → Image</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    :root {
-      --orange: #ff8a00;
-      --pink: #ff9acb;
-      --blue: #19b5fe;
-      --divider: #111;
-      --text: #222;
-      --muted: #888;
-      --bg: #fafbfc;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; background: var(--bg); color: var(--text); }
-
-    /* 전체 2열 레이아웃 */
-    .page {
-      display: grid;
-      grid-template-columns: 1fr 6px 1.2fr; /* 좌/구분선/우 */
-      gap: 0;
-      min-height: 100vh;
-    }
-    .divider {
-      background: var(--divider);
-      width: 6px;
-      height: 100%;
-    }
-    .left, .right { padding: 24px; }
-
-    /* 좌측 상단: 녹음/업로드 박스(오렌지) */
-    .panel {
-      background: #fff;
-      border: 4px solid var(--orange);
-      border-radius: 12px;
-      padding: 18px;
-    }
-    .panel h2 {
-      margin: 0 0 12px;
-      color: var(--orange);
-      font-weight: 700;
-      font-size: 18px;
-    }
-
-    /* 좌측 하단: 분석 설명 박스(핑크) */
-    .panel-pink {
-      background: #fff;
-      border: 4px solid var(--pink);
-      border-radius: 12px;
-      padding: 18px;
-      margin-top: 32px;
-      min-height: 380px; /* 이미지처럼 여유 공간 */
-      display: flex;
-      flex-direction: column;
-    }
-    .panel-pink h2 {
-      margin: 0 0 12px;
-      color: var(--pink);
-      font-weight: 700;
-      font-size: 18px;
-    }
-    .ko-box {
-      flex: 1;
-      border: 2px dashed #bbb;
-      border-radius: 8px;
-      color: #d45a9e;
-      padding: 16px;
-      line-height: 1.6;
-      white-space: pre-wrap;
-    }
-    .tags {
-      margin-top: 10px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-    .tag {
-      background: #ffe7f3;
-      color: #bf4c8f;
-      border: 1px solid #ffc8e7;
-      border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 12px;
-    }
-    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .row + .row { margin-top: 8px; }
-
-    button, .file {
-      appearance: none;
-      border: 0;
-      border-radius: 10px;
-      padding: 10px 14px;
-      font-weight: 600;
-      cursor: pointer;
-      background: #222;
-      color: #fff;
-    }
-    button.secondary { background: #666; }
-    button:disabled { opacity: .45; cursor: not-allowed; }
-    small { color: var(--muted); }
-
-    /* 우측: 이미지 박스(블루) */
-    .image-panel {
-      background: #fff;
-      border: 6px solid var(--blue);
-      border-radius: 12px;
-      padding: 18px;
-      min-height: calc(100vh - 48px);
-      display: flex;
-      flex-direction: column;
-    }
-    .image-panel h2 {
-      margin: 0 0 8px;
-      color: #1aa3e0;
-      font-size: 18px;
-      font-weight: 700;
-    }
-    .image-wrap {
-      flex: 1;
-      display: grid;
-      place-items: center;
-      border-radius: 10px;
-      background: #f5fbff;
-      overflow: hidden;
-    }
-    .image-wrap img { max-width: 100%; height: auto; display: block; }
-    .prompt-debug {
-      margin-top: 10px;
-      padding: 10px;
-      background: #f2f5f8;
-      border-radius: 8px;
-      color: #334;
-      font-size: 12px;
-      white-space: pre-wrap;
-    }
-
-    @media (max-width: 980px) {
-      .page { grid-template-columns: 1fr; }
-      .divider { display: none; }
-      .image-panel { min-height: auto; margin-top: 18px; }
-    }
-  </style>
-</head>
-<body>
-  <div class="page">
-    <!-- 좌측 -->
-    <div class="left">
-      <!-- 녹음/업로드 등(오렌지 박스) -->
-      <section class="panel">
-        <h2>녹음 / 분석 등</h2>
-        <div class="row">
-          <button id="btnRec">● 녹음 시작</button>
-          <button id="btnStop" class="secondary" disabled>■ 녹음 정지</button>
-          <small id="recStatus">대기 중</small>
-        </div>
-        <div class="row">
-          <input type="file" id="file" class="file" accept="audio/*" />
-          <button id="btnUpload">업로드로 분석</button>
-        </div>
-      </section>
-
-      <!-- 분석 후 설명(핑크 박스) -->
-      <section class="panel-pink">
-        <h2>분석 후 설명 나오는 곳</h2>
-        <div id="koBox" class="ko-box">분석 결과가 여기에 표시됩니다.</div>
-        <div class="tags" id="tags"></div>
-
-        <div class="row" style="margin-top:12px;">
-          <button id="btnToImage" disabled>이미지 생성</button>
-        </div>
-      </section>
-    </div>
-
-    <!-- 중앙 구분선 -->
-    <div class="divider"></div>
-
-    <!-- 우측: 이미지 -->
-    <div class="right">
-      <section class="image-panel">
-        <h2>이미지 나오는 화면</h2>
-        <div class="image-wrap" id="imageWrap">
-          <span style="color:#8ad2ff">아직 생성된 이미지가 없습니다</span>
-        </div>
-        <div id="promptDebug" class="prompt-debug" style="display:none;"></div>
-      </section>
-    </div>
-  </div>
-
-  <script>
-    // ------- 상태 -------
-    let mediaRecorder, chunks = [];
-    let lastResult = null;
-
-    // ------- 유틸 -------
-    function setStatus(msg){ document.getElementById('recStatus').textContent = msg; }
-    function showKo(description, ko_explanation, tags=[]) {
-      const text = ko_explanation || description || '설명이 비어 있습니다.';
-      document.getElementById('koBox').textContent = text;
-      const tg = document.getElementById('tags');
-      tg.innerHTML = '';
-      (tags || []).forEach(t=>{
-        const s = document.createElement('span');
-        s.className = 'tag'; s.textContent = t;
-        tg.appendChild(s);
-      });
-      document.getElementById('btnToImage').disabled = !lastResult?.en_prompt;
-    }
-    function showImage(url){
-      const wrap = document.getElementById('imageWrap');
-      wrap.innerHTML = '';
-      const img = document.createElement('img');
-      img.src = url; img.alt = 'result';
-      wrap.appendChild(img);
-    }
-    function debugPromptIfNeeded(res){
-      const box = document.getElementById('promptDebug');
-      if (!res?.en_prompt) { box.style.display='none'; return; }
-      box.style.display='block';
-      box.textContent =
-        "[EN prompt]\\n" + res.en_prompt +
-        (res.negative_prompt ? "\\n\\n[Negative]\\n" + res.negative_prompt : "") +
-        (res.style_tags?.length ? "\\n\\n[Style Tags]\\n" + res.style_tags.join(', ') : "") +
-        (res.palette?.length ? "\\n\\n[Palette]\\n" + res.palette.join(' ') : "") +
-        (res.seed_idea ? "\\n\\n[Seed]\\n" + res.seed_idea : "");
-    }
-
-    async function analyzeBlob(blob){
-      const fd = new FormData();
-      fd.append('file', new File([blob], 'record.webm', {type: 'audio/webm'}));
-
-      const r = await fetch('/analyze_api', { method:'POST', body: fd });
-      const data = await r.json();
-      if(!data.ok){ alert(data.error || '분석 실패'); return; }
-
-      lastResult = data;
-      showKo(data.description, data.ko_explanation, data.tags);
-      debugPromptIfNeeded(data);
-    }
-
-    // ------- 녹음 -------
-    document.getElementById('btnRec').onclick = async () => {
-      const stream = await navigator.mediaDevices.getUserMedia({audio:true});
-      chunks = [];
-      mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
-      mediaRecorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
-      mediaRecorder.onstop = async () => {
-        const blob = new Blob(chunks, {type:'audio/webm'});
-        setStatus('분석 중…');
-        await analyzeBlob(blob);
-        setStatus('대기 중');
-      };
-      mediaRecorder.start();
-      setStatus('녹음 중…');
-      document.getElementById('btnStop').disabled = false;
-    };
-    document.getElementById('btnStop').onclick = () => {
-      if(mediaRecorder && mediaRecorder.state !== 'inactive'){
-        mediaRecorder.stop();
-        document.getElementById('btnStop').disabled = true;
+  <head>
+    <meta charset="utf-8" />
+    <title>Voice → (KO)설명 & (EN)프롬프트 → Image</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --orange: #ff8a00;
+        --pink: #ff9acb;
+        --blue: #19b5fe;
+        --divider: #111;
+        --text: #222;
+        --muted: #888;
+        --bg: #fafbfc;
       }
-    };
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
+          Arial, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
 
-    // ------- 업로드 -------
-    document.getElementById('btnUpload').onclick = async () => {
-      const f = document.getElementById('file').files[0];
-      if(!f){ alert('파일을 선택하세요'); return; }
-      const fd = new FormData(); fd.append('file', f);
-      setStatus('분석 중…');
-      const r = await fetch('/analyze_api', { method:'POST', body: fd });
-      const data = await r.json();
-      if(!data.ok){ alert(data.error || '분석 실패'); setStatus('대기 중'); return; }
-      lastResult = data;
-      showKo(data.description, data.ko_explanation, data.tags);
-      debugPromptIfNeeded(data);
-      setStatus('대기 중');
-    };
+      /* 전체 2열 레이아웃 */
+      .page {
+        display: grid;
+        grid-template-columns: 1fr 6px 1.2fr; /* 좌/구분선/우 */
+        gap: 0;
+        min-height: 100vh;
+      }
+      .divider {
+        background: var(--divider);
+        width: 6px;
+        height: 100%;
+      }
+      .left,
+      .right {
+        padding: 24px;
+      }
 
-    // ------- 이미지 생성 -------
-    document.getElementById('btnToImage').onclick = async () => {
-      if(!lastResult?.en_prompt){ alert('먼저 분석을 완료하세요.'); return; }
-      const r = await fetch('/image/render', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          prompt: lastResult.en_prompt,
-          negativePrompt: lastResult.negative_prompt,
-          width: 768, height: 768
-        })
-      });
-      const j = await r.json();
-      showImage(j.imageUrl);
-    };
-  </script>
-</body>
+      /* 좌측 상단: 녹음/업로드 박스(오렌지) */
+      .panel {
+        background: #fff;
+        border: 4px solid var(--orange);
+        border-radius: 12px;
+        padding: 18px;
+      }
+      .panel h2 {
+        margin: 0 0 12px;
+        color: var(--orange);
+        font-weight: 700;
+        font-size: 18px;
+      }
+
+      /* 좌측 하단: 분석 설명 박스(핑크) */
+      .panel-pink {
+        background: #fff;
+        border: 4px solid var(--pink);
+        border-radius: 12px;
+        padding: 18px;
+        margin-top: 32px;
+        min-height: 380px; /* 이미지처럼 여유 공간 */
+        display: flex;
+        flex-direction: column;
+      }
+      .panel-pink h2 {
+        margin: 0 0 12px;
+        color: var(--pink);
+        font-weight: 700;
+        font-size: 18px;
+      }
+      .ko-box {
+        flex: 1;
+        border: 2px dashed #bbb;
+        border-radius: 8px;
+        color: #d45a9e;
+        padding: 16px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+      }
+      .tags {
+        margin-top: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .tag {
+        background: #ffe7f3;
+        color: #bf4c8f;
+        border: 1px solid #ffc8e7;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .row + .row {
+        margin-top: 8px;
+      }
+
+      button,
+      .file {
+        appearance: none;
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-weight: 600;
+        cursor: pointer;
+        background: #222;
+        color: #fff;
+      }
+      button.secondary {
+        background: #666;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      small {
+        color: var(--muted);
+      }
+
+      /* 우측: 이미지 박스(블루) */
+      .image-panel {
+        background: #fff;
+        border: 6px solid var(--blue);
+        border-radius: 12px;
+        padding: 18px;
+        min-height: calc(100vh - 48px);
+        display: flex;
+        flex-direction: column;
+      }
+      .image-panel h2 {
+        margin: 0 0 8px;
+        color: #1aa3e0;
+        font-size: 18px;
+        font-weight: 700;
+      }
+      .image-wrap {
+        flex: 1;
+        display: grid;
+        place-items: center;
+        border-radius: 10px;
+        background: #f5fbff;
+        overflow: hidden;
+      }
+      .image-wrap img {
+        max-width: 100%;
+        height: auto;
+        display: block;
+      }
+      .prompt-debug {
+        margin-top: 10px;
+        padding: 10px;
+        background: #f2f5f8;
+        border-radius: 8px;
+        color: #334;
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+
+      @media (max-width: 980px) {
+        .page {
+          grid-template-columns: 1fr;
+        }
+        .divider {
+          display: none;
+        }
+        .image-panel {
+          min-height: auto;
+          margin-top: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <!-- 좌측 -->
+      <div class="left">
+        <!-- 녹음/업로드 등(오렌지 박스) -->
+        <section class="panel">
+          <h2>녹음 / 분석 등</h2>
+          <div class="row">
+            <button id="btnRec">● 녹음 시작</button>
+            <button id="btnStop" class="secondary" disabled>■ 녹음 정지</button>
+            <small id="recStatus">대기 중</small>
+          </div>
+          <div class="row">
+            <input type="file" id="file" class="file" accept="audio/*" />
+            <button id="btnUpload">업로드로 분석</button>
+          </div>
+        </section>
+
+        <!-- 분석 후 설명(핑크 박스) -->
+        <section class="panel-pink">
+          <h2>분석 후 설명 나오는 곳</h2>
+          <div id="koBox" class="ko-box">분석 결과가 여기에 표시됩니다.</div>
+          <div class="tags" id="tags"></div>
+
+          <div class="row" style="margin-top: 12px">
+            <button id="btnToImage" disabled>이미지 생성</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- 중앙 구분선 -->
+      <div class="divider"></div>
+
+      <!-- 우측: 이미지 -->
+      <div class="right">
+        <section class="image-panel">
+          <h2>이미지 나오는 화면</h2>
+          <div class="image-wrap" id="imageWrap">
+            <span style="color: #8ad2ff">아직 생성된 이미지가 없습니다</span>
+          </div>
+          <div id="promptDebug" class="prompt-debug" style="display: none"></div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      // ------- 상태 -------
+      let mediaRecorder, chunks = [];
+      let lastResult = null;
+
+      // ------- 유틸 -------
+      function setStatus(msg) {
+        document.getElementById("recStatus").textContent = msg;
+      }
+
+      // (기존) 화면 갱신 유틸 — 유지
+      function showKo(description, ko_explanation, tags = []) {
+        const text = ko_explanation || description || "설명이 비어 있습니다.";
+        document.getElementById("koBox").textContent = text;
+        const tg = document.getElementById("tags");
+        tg.innerHTML = "";
+        (tags || []).forEach((t) => {
+          const s = document.createElement("span");
+          s.className = "tag";
+          s.textContent = t;
+          tg.appendChild(s);
+        });
+        document.getElementById("btnToImage").disabled = !lastResult?.en_prompt;
+      }
+      function showImage(url) {
+        const wrap = document.getElementById("imageWrap");
+        wrap.innerHTML = "";
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = "result";
+        wrap.appendChild(img);
+      }
+      function debugPromptIfNeeded(res) {
+        const box = document.getElementById("promptDebug");
+        if (!res?.en_prompt) {
+          box.style.display = "none";
+          return;
+        }
+        box.style.display = "block";
+        box.textContent =
+          "[EN prompt]\n" + res.en_prompt +
+          (res.negative_prompt ? "\n\n[Negative]\n" + res.negative_prompt : "") +
+          (res.style_tags?.length ? "\n\n[Style Tags]\n" + res.style_tags.join(", ") : "") +
+          (res.palette?.length ? "\n\n[Palette]\n" + res.palette.join(" ") : "") +
+          (res.seed_idea ? "\n\n[Seed]\n" + res.seed_idea : "") +
+          (res.features ? "\n\n[Features]\n" + JSON.stringify(res.features, null, 2) : "");
+      }
+
+      // (신규) 응답 일괄 반영 — 추가
+      function fillUI(data){
+        // 1) ko_explanation 우선
+        const ko = (data.ko_explanation || "").trim();
+        document.getElementById("koBox").textContent =
+          ko || (data.description || "설명을 생성하지 못했습니다.");
+
+        // 2) 태그 — style_tags 우선, 없으면 tags
+        const tg = document.getElementById("tags");
+        tg.innerHTML = "";
+        const tags =
+          (data.style_tags && data.style_tags.length ? data.style_tags : data.tags) || [];
+        tags.forEach((t) => {
+          const s = document.createElement("span");
+          s.className = "tag";
+          s.textContent = t;
+          tg.appendChild(s);
+        });
+
+        // 3) 디버그(프롬프트+피처)
+        debugPromptIfNeeded(data);
+
+        // 4) 버튼 활성화
+        document.getElementById("btnToImage").disabled = !data.en_prompt;
+      }
+
+      async function analyzeBlob(blob) {
+        const fd = new FormData();
+        fd.append("file", new File([blob], "record.webm", { type: "audio/webm" }));
+
+        const r = await fetch("/analyze_api", { method: "POST", body: fd });
+        const data = await r.json();
+        if (!data.ok) {
+          alert(data.error || "분석 실패");
+          return;
+        }
+
+        lastResult = data;
+        // 기존 함수 유지하되, 실제 반영은 fillUI로 일원화
+        // showKo(data.description, data.ko_explanation, data.tags);
+        // debugPromptIfNeeded(data);
+        fillUI(data);
+      }
+
+      // ------- 녹음 -------
+      document.getElementById("btnRec").onclick = async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        chunks = [];
+        mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(chunks, { type: "audio/webm" });
+          setStatus("분석 중…");
+          await analyzeBlob(blob);
+          setStatus("대기 중");
+        };
+        mediaRecorder.start();
+        setStatus("녹음 중…");
+        document.getElementById("btnStop").disabled = false;
+      };
+      document.getElementById("btnStop").onclick = () => {
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          mediaRecorder.stop();
+          document.getElementById("btnStop").disabled = true;
+        }
+      };
+
+      // ------- 업로드 -------
+      document.getElementById("btnUpload").onclick = async () => {
+        const f = document.getElementById("file").files[0];
+        if (!f) { alert("파일을 선택하세요"); return; }
+        const fd = new FormData(); fd.append("file", f);
+        setStatus("분석 중…");
+        const r = await fetch("/analyze_api", { method: "POST", body: fd });
+        const data = await r.json();
+        if (!data.ok) {
+          alert(data.error || "분석 실패");
+          setStatus("대기 중");
+          return;
+        }
+        lastResult = data;
+        // showKo(data.description, data.ko_explanation, data.tags);
+        // debugPromptIfNeeded(data);
+        fillUI(data);
+        setStatus("대기 중");
+      };
+
+      // ------- 이미지 생성 -------
+      document.getElementById("btnToImage").onclick = async () => {
+        if (!lastResult?.en_prompt) {
+          alert("먼저 분석을 완료하세요.");
+          return;
+        }
+        const r = await fetch("/image/render", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: lastResult.en_prompt,
+            negativePrompt: lastResult.negative_prompt,
+            width: 768,
+            height: 768,
+          }),
+        });
+        const j = await r.json();
+        showImage(j.imageUrl);
+      };
+    </script>
+  </body>
 </html>
