@@ -1,251 +1,438 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <title>Povi</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    :root { --orange:#ff8a00; --pink:#ff9acb; --blue:#19b5fe; --divider:#111; --text:#222; --muted:#888; --bg:#fafbfc; }
-    *{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
-    .page{display:grid;grid-template-columns:1fr 6px 1.2fr;min-height:100vh}
-    .divider{background:var(--divider)} .left,.right{padding:24px}
-    .panel{background:#fff;border:4px solid var(--orange);border-radius:12px;padding:18px}
-    .panel h2{margin:0 0 12px;color:var(--orange);font-weight:700;font-size:18px}
-    .panel-pink{background:#fff;border:4px solid var(--pink);border-radius:12px;padding:18px;margin-top:32px;min-height:380px;display:flex;flex-direction:column}
-    .panel-pink h2{margin:0 0 12px;color:var(--pink);font-weight:700;font-size:18px}
-    .ko-box{flex:1;border:2px dashed #bbb;border-radius:8px;color:#d45a9e;padding:16px;line-height:1.6;white-space:pre-wrap}
-    .tags{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}.tag{background:#ffe7f3;color:#bf4c8f;border:1px solid #ffc8e7;border-radius:999px;padding:4px 10px;font-size:12px}
-    .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.row+.row{margin-top:8px}
-    button,.file{appearance:none;border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer;background:#222;color:#fff}
-    button.secondary{background:#666} button:disabled{opacity:.45;cursor:not-allowed} small{color:var(--muted)}
-    .image-panel{background:#fff;border:6px solid var(--blue);border-radius:12px;padding:18px;min-height:calc(100vh - 48px);display:flex;flex-direction:column}
-    .image-panel h2{margin:0 0 8px;color:#1aa3e0;font-size:18px;font-weight:700}
-    .image-wrap{flex:1;display:grid;place-items:center;border-radius:10px;background:#f5fbff;overflow:hidden}
-    .image-wrap img{max-width:100%;height:auto;display:block}
-    @media (max-width:980px){.page{grid-template-columns:1fr}.divider{display:none}.image-panel{min-height:auto;margin-top:18px}}
-  </style>
-</head>
-<body>
-  <div class="page">
-    <div class="left">
-      <section class="panel">
-        <h2>녹음 / 업로드 / 미리듣기</h2>
-        <div class="row">
-          <button id="btnRec">● 녹음 시작</button>
-          <button id="btnStop" class="secondary" disabled>■ 녹음 정지</button>
-          <small id="recStatus">대기 중</small>
-        </div>
-        <div class="row" style="width:100%;margin-top:8px;">
-          <audio id="previewAudio" controls style="width:100%;display:none;"></audio>
-        </div>
-        <div class="row" style="width:100%;margin-top:8px;">
-          <input type="file" id="file" class="file" accept="audio/*" />
-          <button id="btnPreview" class="secondary" disabled>▷ 미리 듣기</button>
-          <button id="btnAnalyze" disabled>분석하기</button>
-        </div>
-      </section>
+  <head>
+    <meta charset="utf-8" />
+    <title>Voice → (KO)설명 & (EN)프롬프트 → Image</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --orange: #ff8a00;
+        --pink: #ff9acb;
+        --blue: #19b5fe;
+        --divider: #111;
+        --text: #222;
+        --muted: #888;
+        --bg: #fafbfc;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
+          Arial, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
 
-      <section class="panel-pink">
-        <h2>분석 결과</h2>
-        <div id="koBox" class="ko-box">분석 결과가 여기에 표시됩니다.</div>
-        <div class="tags" id="tags"></div>
-        <div class="row" style="margin-top:12px;">
-          <button id="btnToImage" disabled>이미지 생성</button>
-        </div>
-      </section>
+      /* 전체 2열 레이아웃 */
+      .page {
+        display: grid;
+        grid-template-columns: 1fr 6px 1.2fr; /* 좌/구분선/우 */
+        gap: 0;
+        min-height: 100vh;
+      }
+      .divider {
+        background: var(--divider);
+        width: 6px;
+        height: 100%;
+      }
+      .left,
+      .right {
+        padding: 24px;
+      }
+
+      /* 좌측 상단: 녹음/업로드 박스(오렌지) */
+      .panel {
+        background: #fff;
+        border: 4px solid var(--orange);
+        border-radius: 12px;
+        padding: 18px;
+      }
+      .panel h2 {
+        margin: 0 0 12px;
+        color: var(--orange);
+        font-weight: 700;
+        font-size: 18px;
+      }
+
+      /* 좌측 하단: 분석 설명 박스(핑크) */
+      .panel-pink {
+        background: #fff;
+        border: 4px solid var(--pink);
+        border-radius: 12px;
+        padding: 18px;
+        margin-top: 32px;
+        min-height: 380px; /* 이미지처럼 여유 공간 */
+        display: flex;
+        flex-direction: column;
+      }
+      .panel-pink h2 {
+        margin: 0 0 12px;
+        color: var(--pink);
+        font-weight: 700;
+        font-size: 18px;
+      }
+      .ko-box {
+        flex: 1;
+        border: 2px dashed #bbb;
+        border-radius: 8px;
+        color: #d45a9e;
+        padding: 16px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+      }
+      .tags {
+        margin-top: 10px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .tag {
+        background: #ffe7f3;
+        color: #bf4c8f;
+        border: 1px solid #ffc8e7;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .row + .row {
+        margin-top: 8px;
+      }
+
+      button,
+      .file {
+        appearance: none;
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-weight: 600;
+        cursor: pointer;
+        background: #222;
+        color: #fff;
+      }
+      button.secondary {
+        background: #666;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      small {
+        color: var(--muted);
+      }
+
+      /* 우측: 이미지 박스(블루) */
+      .image-panel {
+        background: #fff;
+        border: 6px solid var(--blue);
+        border-radius: 12px;
+        padding: 18px;
+        min-height: calc(100vh - 48px);
+        display: flex;
+        flex-direction: column;
+      }
+      .image-panel h2 {
+        margin: 0 0 8px;
+        color: #1aa3e0;
+        font-size: 18px;
+        font-weight: 700;
+      }
+      .image-wrap {
+        flex: 1;
+        display: grid;
+        place-items: center;
+        border-radius: 10px;
+        background: #f5fbff;
+        overflow: hidden;
+      }
+      .image-wrap img {
+        max-width: 100%;
+        height: auto;
+        display: block;
+      }
+      .prompt-debug {
+        margin-top: 10px;
+        padding: 10px;
+        background: #f2f5f8;
+        border-radius: 8px;
+        color: #334;
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+
+      @media (max-width: 980px) {
+        .page {
+          grid-template-columns: 1fr;
+        }
+        .divider {
+          display: none;
+        }
+        .image-panel {
+          min-height: auto;
+          margin-top: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <!-- 좌측 -->
+      <div class="left">
+        <!-- 녹음/업로드 등(오렌지 박스) -->
+        <section class="panel">
+          <h2>녹음 / 분석 등</h2>
+          <div class="row">
+            <button id="btnRec">● 녹음 시작</button>
+            <button id="btnStop" class="secondary" disabled>■ 녹음 정지</button>
+            <small id="recStatus">대기 중</small>
+          </div>
+          <div class="row">
+            <input type="file" id="file" class="file" accept="audio/*" />
+            <button id="btnUpload">업로드로 분석</button>
+          </div>
+        </section>
+
+        <!-- 분석 후 설명(핑크 박스) -->
+        <section class="panel-pink">
+          <h2>분석 후 설명 나오는 곳</h2>
+          <div id="koBox" class="ko-box">분석 결과가 여기에 표시됩니다.</div>
+          <div class="tags" id="tags"></div>
+
+          <div class="row" style="margin-top: 12px">
+            <button id="btnToImage" disabled>이미지 생성</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- 중앙 구분선 -->
+      <div class="divider"></div>
+
+      <!-- 우측: 이미지 -->
+      <div class="right">
+        <section class="image-panel">
+          <h2>이미지 나오는 화면</h2>
+          <div class="image-wrap" id="imageWrap">
+            <span style="color: #8ad2ff">아직 생성된 이미지가 없습니다</span>
+          </div>
+          <div id="promptDebug" class="prompt-debug" style="display: none"></div>
+        </section>
+      </div>
     </div>
 
-    <div class="divider"></div>
+    <script>
+  // ====== (필요시) 백엔드가 다른 포트/도메인일 때만 설정 ======
+  // 같은 오리진(예: index.html도 8000에서 서빙)이면 빈 문자열 유지
+  const API_BASE = ""; // 예: "http://127.0.0.1:8000"
 
-    <div class="right">
-      <section class="image-panel">
-        <h2>이미지</h2>
-        <div class="image-wrap" id="imageWrap">
-          <span style="color:#8ad2ff">아직 생성된 이미지가 없습니다</span>
-        </div>
-      </section>
-    </div>
-  </div>
-
-  <script>
-    // ==== 상태 ====
-    let mediaRecorder, chunks=[];
-    let latestBlob=null, latestFile=null;
-    let lastObjectUrl=null, pendingRevoke=null;
-    let currentStream=null;
-
-    const $ = id => document.getElementById(id);
-    const setStatus = t => $('recStatus').textContent = t;
-    const audioEl = () => $('previewAudio');
-
-    // --- 안전한 revoke 타이밍 관리 ---
-    function safelyRevoke(url){
-      if (!url) return;
-      try { URL.revokeObjectURL(url); } catch(e){}
+  // ---------- 공통 유틸 ----------
+  function normalizeArray(val) {
+    if (Array.isArray(val)) return val;
+    if (val == null) return [];
+    if (typeof val === "string") {
+      try { return normalizeArray(JSON.parse(val)); } catch {}
+      return val.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
     }
-
-    function setPreviewUrl(url){
-      const a = audioEl();
-
-      // 스트림 미리듣기 해제
-      if (a.srcObject) a.srcObject = null;
-
-      // 이전 revoke 예약 취소
-      if (pendingRevoke){ clearTimeout(pendingRevoke); pendingRevoke=null; }
-
-      const prev = lastObjectUrl;
-
-      if (url){
-        a.src = url;
-        a.style.display = 'block';
-
-        // 새 URL 로드되면 그때 이전 것 revoke (즉시 해제 금지!)
-        const onLoaded = () => {
-          if (prev && prev !== url) safelyRevoke(prev);
-          a.removeEventListener('loadeddata', onLoaded);
-        };
-        a.addEventListener('loadeddata', onLoaded);
-
-        if (typeof url === 'string' && url.startsWith('blob:')) {
-          lastObjectUrl = url;      // blob만 추적
-        } else {
-          lastObjectUrl = null;     // http(s) 등은 추적 불필요
-        }
-
-        a.play?.().catch(()=>{});   // 자동재생 정책 걸리면 ▶ 눌러주세요
-      } else {
-        a.removeAttribute('src');
-        a.style.display = 'none';
-        // 잠깐 딜레이 후 이전 blob 정리 (브라우저가 사용 중일 수 있음)
-        if (prev){
-          pendingRevoke = setTimeout(()=>{ safelyRevoke(prev); pendingRevoke=null; }, 1500);
-        }
-        lastObjectUrl = null;
+    if (typeof val === "object") {
+      const out = [];
+      for (const k in val) {
+        const v = val[k];
+        if (Array.isArray(v)) out.push(...v.map(String));
+        else if (v != null) out.push(String(v));
       }
+      return out;
     }
+    return [String(val)];
+  }
 
-    function setPreviewFromBlob(blob){
-      const url = URL.createObjectURL(blob);
-      setPreviewUrl(url);
-    }
-    function setPreviewFromFile(file){
-      const url = URL.createObjectURL(file);
-      setPreviewUrl(url);
-    }
+  function normalizeTags(val) { return normalizeArray(val); }
 
-    function showKo(description, ko_explanation, tags=[]){
-      $('koBox').textContent = ko_explanation || description || '설명이 비어 있습니다.';
-      const c = $('tags'); c.innerHTML='';
-      (tags||[]).forEach(t=>{
-        const s=document.createElement('span'); s.className='tag'; s.textContent=t; c.appendChild(s);
-      });
-      $('btnToImage').disabled = !(window.lastResult?.en_prompt);
-    }
-    function showImage(url){
-      const wrap=$('imageWrap'); wrap.innerHTML='';
-      const img=document.createElement('img'); img.src=url; img.alt='result';
-      wrap.appendChild(img);
-    }
+  // 응답 키 표준화(루트/중첩 & snake/camel 혼용 방지)
+  function normalizeResult(raw) {
+    const payload = raw?.result || raw?.data || raw || {};
+    const en_prompt =
+      payload.en_prompt ?? payload.enPrompt ?? payload.prompt_en ?? payload.prompt ?? "";
+    const negative_prompt =
+      payload.negative_prompt ?? payload.negativePrompt ?? payload.negative ?? "";
 
-    async function analyze(){
-      const fd = new FormData();
-      if (latestFile){
-        fd.append('file', latestFile);
-      } else if (latestBlob){
-        fd.append('file', new File([latestBlob], 'record.webm', {type:'audio/webm'}));
-      } else {
-        alert('분석할 음성이 없습니다.'); return;
-      }
-      setStatus('분석 중…');
-      try{
-        const res = await fetch('/analyze_api', { method:'POST', body: fd });
-        const data = await res.json();
-        if(!data.ok){ alert(data.error || '분석 실패'); setStatus('대기 중'); return; }
-        window.lastResult = data;
-        showKo(data.description, data.ko_explanation, data.tags||[]);
-        setStatus('대기 중');
-        // if (data.preview_url) setPreviewUrl(data.preview_url); // (원하면 분석 후 서버 저장본으로 전환)
-      }catch(e){ alert('분석 호출 실패'); setStatus('대기 중'); }
-    }
-
-    // ==== 녹음 ====
-    $('btnRec').onclick = async ()=>{
-      const stream = await navigator.mediaDevices.getUserMedia({audio:true});
-      chunks=[]; currentStream=stream;
-
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-      mediaRecorder = new MediaRecorder(stream, { mimeType: mime });
-
-      mediaRecorder.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
-      mediaRecorder.onstop = ()=>{
-        const blob = new Blob(chunks, {type:'audio/webm'});
-
-        latestBlob = blob; latestFile = null;
-        setPreviewFromBlob(blob);              // 🔹 녹음 직후 미리듣기
-        $('btnPreview').disabled = false;
-        $('btnAnalyze').disabled = false;
-        setStatus('미리듣기 가능');
-
-        try{ currentStream?.getTracks()?.forEach(t=>t.stop()); }catch(e){}
-        currentStream=null;
-      };
-
-      mediaRecorder.start();
-      setStatus('녹음 중…');
-      $('btnStop').disabled = false;
-
-      // (선택) 녹음 중 실시간 모니터링
-      try{
-        const a=audioEl();
-        a.srcObject=stream; a.style.display='block';
-        a.play?.().catch(()=>{});
-      }catch(e){}
+    return {
+      ok: raw?.ok ?? true,
+      // 표시용
+      description: payload.description ?? "",
+      ko_explanation: payload.ko_explanation ?? payload.koExplanation ?? "",
+      // 프롬프트 표준 키
+      en_prompt: en_prompt,
+      negative_prompt: negative_prompt,
+      // 태그/팔레트 표준화
+      style_tags: normalizeArray(payload.style_tags ?? payload.styleTags ?? payload.tags ?? payload.tag ?? payload.keywords),
+      palette: normalizeArray(payload.palette),
+      seed_idea: payload.seed_idea ?? payload.seedIdea ?? "",
+      features: payload.features ?? null,
     };
+  }
 
-    $('btnStop').onclick = ()=>{
-      if (mediaRecorder && mediaRecorder.state !== 'inactive'){
-        mediaRecorder.stop(); $('btnStop').disabled = true;
-      }
-    };
+  // ---------- 상태 ----------
+  let mediaRecorder, chunks = [];
+  let lastResult = null;
 
-    // ==== 업로드 → 즉시 미리듣기 ====
-    $('file').addEventListener('change', e=>{
-      const f = e.target.files[0];
-      latestFile = f || null;
-      if (f){
-        latestBlob = null;
-        setPreviewFromFile(f);                 // 🔹 업로드 즉시 미리듣기
-        $('btnPreview').disabled = false;
-        $('btnAnalyze').disabled = false;
-        setStatus('미리듣기 가능');
-      } else {
-        $('btnPreview').disabled = true;
-        $('btnAnalyze').disabled = true;
-        setPreviewUrl(null);
-        setStatus('대기 중');
+  // ---------- UI 유틸 ----------
+  function setStatus(msg) {
+    document.getElementById("recStatus").textContent = msg;
+  }
+
+  function showImage(url) {
+    const wrap = document.getElementById("imageWrap");
+    wrap.innerHTML = "";
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "result";
+    wrap.appendChild(img);
+  }
+
+  function debugPromptIfNeeded(res) {
+    const box = document.getElementById("promptDebug");
+    try {
+      const en = res?.en_prompt || "";
+      if (!en) { box.style.display = "none"; return; }
+
+      // negative는 세 가지 케이스 모두 고려
+      const neg = res?.negative_prompt || res?.negative || res?.negativePrompt || "";
+      const style = normalizeArray(res?.style_tags);
+      const palette = normalizeArray(res?.palette);
+      const seed = res?.seed_idea || "";
+      const features = res?.features;
+
+      let text = "[EN prompt]\n" + en;
+      if (neg) text += "\n\n[Negative]\n" + neg;
+      if (style.length) text += "\n\n[Style Tags]\n" + style.join(", ");
+      if (palette.length) text += "\n\n[Palette]\n" + palette.join(" ");
+      if (seed) text += "\n\n[Seed]\n" + seed;
+      if (features && typeof features === "object") {
+        text += "\n\n[Features]\n" + JSON.stringify(features, null, 2);
       }
+
+      box.style.display = "block";
+      box.textContent = text;
+    } catch (e) {
+      console.warn("debugPromptIfNeeded failed:", e);
+      box.style.display = "none";
+    }
+  }
+
+  function fillUI(normalized) {
+    const ko = (normalized.ko_explanation || "").trim();
+    document.getElementById("koBox").textContent =
+      ko || (normalized.description || "설명을 생성하지 못했습니다.");
+
+    const tg = document.getElementById("tags");
+    tg.innerHTML = "";
+    normalizeArray(normalized.style_tags).forEach((t) => {
+      const s = document.createElement("span");
+      s.className = "tag";
+      s.textContent = t;
+      tg.appendChild(s);
     });
 
-    // ==== 미리듣기 버튼 ====
-    $('btnPreview').onclick = ()=>{
-      if (latestBlob){ setPreviewFromBlob(latestBlob); return; }
-      if (latestFile){ setPreviewFromFile(latestFile); return; }
-      alert('미리 들을 음성이 없습니다.');
-    };
+    debugPromptIfNeeded(normalized);
+    document.getElementById("btnToImage").disabled = !normalized.en_prompt;
+  }
 
-    // ==== 분석 버튼 ====
-    $('btnAnalyze').onclick = analyze;
+  // ---------- 분석 ----------
+  async function analyzeBlob(blob) {
+    const fd = new FormData();
+    fd.append("file", new File([blob], "record.webm", { type: "audio/webm" }));
 
-    // ==== 이미지 생성 ====
-    $('btnToImage').onclick = async ()=>{
-      if(!window.lastResult?.en_prompt){ alert('먼저 분석을 완료하세요.'); return; }
-      const r = await fetch('/image/render', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ prompt: window.lastResult.en_prompt, negativePrompt: window.lastResult.negative_prompt||'', width:768, height:768 })
-      });
-      const j = await r.json();
-      if (j?.imageUrl) showImage(j.imageUrl);
+    const r = await fetch(`${API_BASE}/analyze_api`, { method: "POST", body: fd });
+    const raw = await r.json().catch(() => null);
+    if (!raw || raw.ok === false) {
+      alert(raw?.error || "분석 실패");
+      return;
+    }
+    const data = normalizeResult(raw);
+    lastResult = data;
+    fillUI(data);
+  }
+
+  // ---------- 녹음 ----------
+  document.getElementById("btnRec").onclick = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    chunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(chunks, { type: "audio/webm" });
+      setStatus("분석 중…");
+      await analyzeBlob(blob);
+      setStatus("대기 중");
     };
-  </script>
-</body>
+    mediaRecorder.start();
+    setStatus("녹음 중…");
+    document.getElementById("btnStop").disabled = false;
+  };
+
+  document.getElementById("btnStop").onclick = () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+      document.getElementById("btnStop").disabled = true;
+    }
+  };
+
+  // ---------- 업로드 분석 ----------
+  document.getElementById("btnUpload").onclick = async () => {
+    const f = document.getElementById("file").files[0];
+    if (!f) { alert("파일을 선택하세요"); return; }
+    const fd = new FormData(); fd.append("file", f);
+    setStatus("분석 중…");
+    const r = await fetch(`${API_BASE}/analyze_api`, { method: "POST", body: fd });
+    const raw = await r.json().catch(()=>null);
+    if (!raw || raw.ok === false) {
+      alert(raw?.error || "분석 실패");
+      setStatus("대기 중");
+      return;
+    }
+    const data = normalizeResult(raw);
+    lastResult = data;
+    fillUI(data);
+    setStatus("대기 중");
+  };
+
+  // ---------- 이미지 생성 ----------
+  document.getElementById("btnToImage").onclick = async () => {
+    if (!lastResult?.en_prompt) {
+      alert("먼저 분석을 완료하세요.");
+      return;
+    }
+    const r = await fetch(`${API_BASE}/image/render`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: lastResult.en_prompt,
+        // 서버가 어떤 키를 쓰든 여기서 통일해서 보냄
+        negativePrompt: lastResult.negative_prompt,
+        width: 768,
+        height: 768,
+      }),
+    });
+
+    if (!r.ok) {
+      const msg = await r.text().catch(()=> "");
+      alert(`Image API ${r.status}\n${msg || "Request failed"}`);
+      return;
+    }
+    const j = await r.json().catch(()=>null);
+    if (!j?.imageUrl) {
+      alert(j?.error || "imageUrl이 응답에 없습니다.");
+      return;
+    }
+    showImage(j.imageUrl);
+  };
+</script>
+
+  </body>
 </html>
