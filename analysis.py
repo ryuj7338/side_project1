@@ -1,140 +1,220 @@
-# analysis.py
+from __future__ import annotations
+import os
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, List
 from pathlib import Path
-from typing import Optional, Dict
 
-def analyze_voice(wav_path: Path, transcript: Optional[str] = None) -> Dict:
-    """
-    음성 파일을 분석해 피치/에너지/톤 관련 라벨과 지표를 반환합니다.
-    - librosa/numpy는 지연 임포트
-    - NaN/inf/빈 배열 방어 처리
-    - 무음 오탐을 줄이기 위해 RMS 75퍼센타일 + 피크레벨 기반 보정
-    - 반환값은 dict로 일정한 스키마 유지
-    - transcript는 향후 말하기 속도/내용 분석에 활용 가능 (현재는 미사용)
-    """
+import numpy as np
+import librosa
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# ============================
+# 환경 & OpenAI
+# ============================
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env.sample")  # sample만 읽던 버전도 흡수  :contentReference[oaicite:18]{index=18}
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    print("[analysis.py] WARNING: OPENAI_API_KEY not set — LLM 설명은 폴백 사용")
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None  # :contentReference[oaicite:19]{index=19}
+
+# ============================
+# 유틸
+# ============================
+def _safe_float(x, ndigits: int = 5) -> Optional[float]:
     try:
-        # --- 지연 임포트 ---
-        import numpy as np
-        import librosa
+        return round(float(x), ndigits)
+    except Exception:
+        return None
 
-        # --- 음성 로드 (16kHz mono) ---
-        y, sr = librosa.load(str(wav_path), sr=16000, mono=True)
-        if y is None or len(y) == 0:
-            raise ValueError("오디오가 비어 있습니다.")
+def _nan_robust(values: np.ndarray, fn, default=None):
+    try:
+        v = fn(values[~np.isnan(values)])
+        if np.isnan(v):
+            return default
+        return v
+    except Exception:
+        return default
 
-        # 비정상 값 방어
-        if np.isnan(y).any() or np.isinf(y).any():
-            y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+@dataclass
+class VoiceFeatures:
+    duration_sec: Optional[float]
+    f0_med: Optional[float]
+    f0_range: Optional[float]
+    energy_mean: Optional[float]
+    zcr_mean: Optional[float]
+    sc_mean: Optional[float]
+    tempo_bpm_like: Optional[float]
+    is_silent: bool
 
-        # --- 특징 추출 ---
-        # 1) F0 (yin 기반)
-        try:
-            f0 = librosa.yin(y, fmin=50, fmax=400, sr=sr)
-            f0 = f0[np.isfinite(f0)] if f0 is not None else np.array([])
-            f0_med = float(np.nanmedian(f0)) if f0.size > 0 else 0.0
-        except Exception:
-            f0_med = 0.0
-
-        # 2) RMS, ZCR, Spectral Centroid
-        try:
-            rms = librosa.feature.rms(y=y)[0]
-        except Exception:
-            rms = np.array([0.0], dtype=float)
-        try:
-            zcr = librosa.feature.zero_crossing_rate(y)[0]
-        except Exception:
-            zcr = np.array([0.0], dtype=float)
-        try:
-            sc = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
-        except Exception:
-            sc = np.array([0.0], dtype=float)
-
-        # 안전 평균 함수
-        def _safe_mean(a, default=0.0):
-            if a is None or a.size == 0:
-                return default
-            a = np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
-            return float(np.mean(a))
-
-        energy_mean = _safe_mean(rms)
-        zcr_mean = _safe_mean(zcr)
-        sc_mean = _safe_mean(sc)
-
-        # --- 무음 보정 ---
-        rms_p75 = float(np.percentile(np.nan_to_num(rms, nan=0.0), 75)) if rms.size > 0 else 0.0
-        peak = float(np.max(np.abs(y))) if y.size > 0 else 0.0
-        looks_silent = (rms_p75 < 1e-3) and (peak < 2e-2)
-
-        # --- 라벨링 ---
-        # 피치
-        if f0_med == 0:
-            pitch_label = "안정적인"
-        elif f0_med < 150:
-            pitch_label = "낮고 안정적인"
-        elif f0_med < 220:
-            pitch_label = "중간 높이의"
-        else:
-            pitch_label = "높고 또렷한"
-
-        # 에너지
-        if energy_mean < 0.02:
-            energy_label = "차분한"
-        elif energy_mean < 0.05:
-            energy_label = "안정적이며 편안한"
-        else:
-            energy_label = "활기 있고 에너지가 느껴지는"
-
-        # 톤
-        if zcr_mean < 0.04:
-            tone_label = "따뜻하고 부드러운"
-        elif zcr_mean < 0.08:
-            tone_label = "부드럽지만 또렷한"
-        else:
-            tone_label = "선명하고 경쾌한"
-
-        # 밝기 보정
-        if sc_mean > 2500:
-            tone_label = "밝고 선명한"
-
-        # --- 설명 구성 ---
-        description_lines = [
-            f"{pitch_label} 목소리를 가진 사람.",
-            f"{energy_label} 인상이며,",
-            f"{tone_label} 느낌입니다."
-        ]
-        description = "\n".join(description_lines)
-        tags = [pitch_label, energy_label, tone_label]
-
-        # --- 무음 처리 ---
-        if looks_silent:
-            return {
-                "f0_med": round(f0_med, 4),
-                "energy_mean": round(energy_mean, 6),
-                "zcr_mean": round(zcr_mean, 6),
-                "sc_mean": round(sc_mean, 2),
-                "description": "",
-                "tags": [],
-                "is_silent": True,
-            }
-
-        # --- 정상 반환 ---
+    def to_dict(self) -> Dict[str, Any]:
         return {
-            "f0_med": round(f0_med, 4),
-            "energy_mean": round(energy_mean, 6),
-            "zcr_mean": round(zcr_mean, 6),
-            "sc_mean": round(sc_mean, 2),
-            "description": description,
-            "tags": tags,
-            "is_silent": False,
-        }
+            "duration_sec": self.duration_sec,
+            "f0_med": self.f0_med,
+            "f0_range": self.f0_range,
+            "energy_mean": self.energy_mean,
+            "zcr_mean": self.zcr_mean,
+            "sc_mean": self.sc_mean,
+            "tempo_bpm_like": self.tempo_bpm_like,
+            "is_silent": self.is_silent,
+        }  # :contentReference[oaicite:20]{index=20}
 
-    except Exception as e:
-        return {
-            "f0_med": 0.0,
-            "energy_mean": 0.0,
-            "zcr_mean": 0.0,
-            "sc_mean": 0.0,
-            "description": "",
-            "tags": [],
-            "is_silent": True,
-            "error": str(e),
-        }
+# ============================
+# 특징 추출
+# ============================
+def _extract_features(file_path: str, target_sr: int = 16000) -> VoiceFeatures:
+    y, sr = librosa.load(file_path, sr=target_sr, mono=True)
+    duration = _safe_float(librosa.get_duration(y=y, sr=sr), 6)
+
+    rms = librosa.feature.rms(y=y).flatten()
+    is_silent = bool(np.mean(rms) < 1e-3)
+
+    try:
+        f0 = librosa.yin(y, fmin=50, fmax=1100, sr=sr)
+    except Exception:
+        f0 = np.array([np.nan])
+
+    f0_med = _safe_float(_nan_robust(f0, np.nanmedian, default=np.nan), 2)
+    f0_p95 = _nan_robust(f0, lambda a: np.nanpercentile(a, 95), default=np.nan)
+    f0_p05 = _nan_robust(f0, lambda a: np.nanpercentile(a, 5), default=np.nan)
+    f0_range = _safe_float((f0_p95 - f0_p05) if (f0_p95 is not None and f0_p05 is not None) else np.nan, 2)
+
+    energy_mean = _safe_float(float(np.mean(rms)) if len(rms) else np.nan, 6)
+    zcr = librosa.feature.zero_crossing_rate(y=y).flatten()
+    zcr_mean = _safe_float(float(np.mean(zcr)) if len(zcr) else np.nan, 6)
+    sc = librosa.feature.spectral_centroid(y=y, sr=sr).flatten()
+    sc_mean = _safe_float(float(np.mean(sc)) if len(sc) else np.nan, 2)
+
+    try:
+        tempo = librosa.beat.tempo(y=y, sr=sr)
+        tempo_bpm_like = _safe_float(float(tempo[0]) if tempo.size else np.nan, 2)
+    except Exception:
+        tempo_bpm_like = None
+
+    return VoiceFeatures(
+        duration_sec=duration,
+        f0_med=f0_med,
+        f0_range=f0_range,
+        energy_mean=energy_mean,
+        zcr_mean=zcr_mean,
+        sc_mean=sc_mean,
+        tempo_bpm_like=tempo_bpm_like,
+        is_silent=is_silent
+    )  # :contentReference[oaicite:21]{index=21}
+
+# ============================
+# 태그 생성(프롬프트 힌트)
+# ============================
+def _simple_tags_from_features(f: VoiceFeatures) -> List[str]:
+    tags: List[str] = []
+    if f.f0_med is None:
+        pass
+    elif f.f0_med < 150:
+        tags.append("낮고 안정적인")
+    elif f.f0_med < 220:
+        tags.append("중간 높이")
+    else:
+        tags.append("높고 또렷한")
+
+    if (f.energy_mean or 0) < 0.02:
+        tags.append("차분한")
+    elif (f.energy_mean or 0) < 0.05:
+        tags.append("안정적")
+    else:
+        tags.append("활기찬")
+
+    if (f.zcr_mean or 0) < 0.04:
+        tags.append("부드러운")
+    elif (f.zcr_mean or 0) < 0.08:
+        tags.append("또렷한")
+    else:
+        tags.append("경쾌한")
+
+    if (f.sc_mean or 0) > 2500:
+        tags.append("빛감이 있는")
+    return tags  # :contentReference[oaicite:22]{index=22}
+
+# ============================
+# LLM 설명(한국어), 실패 시 폴백
+# ============================
+def _llm_describe_voice(features: VoiceFeatures) -> str:
+    f = features.to_dict()
+    system_msg = (
+        "당신은 음성평가 전문가입니다. 숫자를 참고하되, 실제 목소리를 들은 듯 한국어로 2~4문장 설명하세요. "
+        "과장·편견·민감정보는 피하고 존중하는 어조를 사용하세요."
+    )
+    user_msg = f"""
+- 평균 피치(f0_med): {f.get('f0_med')}
+- 피치 범위(f0_range): {f.get('f0_range')}
+- 평균 에너지(RMS 평균): {f.get('energy_mean')}
+- ZCR 평균: {f.get('zcr_mean')}
+- 스펙트럴 센트로이드 평균: {f.get('sc_mean')}
+- 리듬 유사 BPM: {f.get('tempo_bpm_like')}
+- 길이: {f.get('duration_sec')}
+- 무성 판정: {f.get('is_silent')}
+
+요청: 자연스러운 한국어 문장만 2~4문장으로 출력.
+"""
+    if not client:
+        return "차분하고 안정적인 톤이 느껴집니다. 과장되지 않고 또렷하게 전달되어 신뢰감을 주는 인상입니다."
+    try:
+        res = client.chat.completions.create(
+            model=OPENAI_MODEL, temperature=0.8, max_tokens=220,
+            messages=[{"role": "system", "content": system_msg},
+                      {"role": "user", "content": user_msg}],
+        )
+        text = (res.choices[0].message.content or "").strip()
+        if not text or len(text) < 10:
+            raise ValueError("empty llm response")
+        return text
+    except Exception:
+        return "차분하고 안정적인 톤이 느껴집니다. 과장되지 않고 또렷하게 전달되어 신뢰감을 주는 인상입니다."  # :contentReference[oaicite:23]{index=23}
+
+# ============================
+# 기본 우측 패널 필드
+# ============================
+def _build_visual_fields(features: VoiceFeatures) -> Dict[str, Any]:
+    en_prompt = (
+        "A character portrait in soft ambient light, conveying an energetic yet calm presence; "
+        "cinematic composition; subtle depth of field; clean lines, coherent anatomy."
+    )
+    negative = "low quality, blurry, extra limbs, distorted anatomy, deformed, text, watermark, logo, frame, oversaturated, underexposed, jpeg artifacts"
+    style_tags = "semi-realistic, cinematic, clean-lines"
+    palette = ["#A0C4FF", "#BDB2FF", "#FFC6FF", "#FFADAD"]
+    seed = "character portrait in soft ambient light"
+    return {
+        "en_prompt": en_prompt,
+        "negative": negative,
+        "style_tags": style_tags,
+        "palette": palette,
+        "seed": seed,
+    }  # :contentReference[oaicite:24]{index=24}
+
+# ============================
+# 외부 API: 호환 스키마로 반환
+# ============================
+def analyze_voice(file_path: str) -> Dict[str, Any]:
+    """
+    반환 스키마(호환):
+      {
+        "features": {...},            # 수치
+        "description_ko": "...",      # 한국어 설명
+        "tags": [...],                # 간단 태그(없어도 프론트에서 기본값 처리)
+        "en_prompt"/"negative"/...    # 우측 패널 기본값
+      }
+    """
+    features = _extract_features(file_path)
+    description_ko = _llm_describe_voice(features)
+    tags = _simple_tags_from_features(features)  # (없던 태그 생성 추가)  :contentReference[oaicite:25]{index=25}
+
+    result: Dict[str, Any] = {
+        "features": features.to_dict(),
+        "description_ko": description_ko,
+        "tags": tags,
+    }
+    result.update(_build_visual_fields(features))
+    return result  # :contentReference[oaicite:26]{index=26}
