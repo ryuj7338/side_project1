@@ -404,34 +404,47 @@
 
   // ---------- 이미지 생성 ----------
   document.getElementById("btnToImage").onclick = async () => {
-    if (!lastResult?.en_prompt) {
-      alert("먼저 분석을 완료하세요.");
-      return;
-    }
-    const r = await fetch(`${API_BASE}/image/render`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt: lastResult.en_prompt,
-        // 서버가 어떤 키를 쓰든 여기서 통일해서 보냄
-        negativePrompt: lastResult.negative_prompt,
-        width: 768,
-        height: 768,
-      }),
-    });
+  if (!lastResult?.en_prompt) {
+    alert("먼저 분석을 완료하세요.");
+    return;
+  }
 
-    if (!r.ok) {
-      const msg = await r.text().catch(()=> "");
-      alert(`Image API ${r.status}\n${msg || "Request failed"}`);
-      return;
-    }
-    const j = await r.json().catch(()=>null);
-    if (!j?.imageUrl) {
-      alert(j?.error || "imageUrl이 응답에 없습니다.");
-      return;
-    }
-    showImage(j.imageUrl);
-  };
+  const style   = (lastResult.style_tags || []).join(", ");
+  const palette = (lastResult.palette || []).join(" ");
+
+  // ✅ 항상 적용: avatar_hint_text가 있으면 무조건 붙임
+  const hint = lastResult.avatar?.avatar_hint_text
+    ? `, ${lastResult.avatar.avatar_hint_text}`
+    : "";
+
+  const composedPrompt = [
+    lastResult.en_prompt,
+    style   ? `, style: ${style}`   : "",
+    palette ? `, palette: ${palette}` : "",
+    hint
+  ].join("");
+
+  const r = await fetch(`${API_BASE}/image/render`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt: composedPrompt,
+      negativePrompt: lastResult.negative_prompt,
+      width: 768,
+      height: 768,
+    }),
+  });
+
+  if (!r.ok) {
+    const msg = await r.text().catch(()=> "");
+    alert(`Image API ${r.status}\n${msg || "Request failed"}`);
+    return;
+  }
+  const j = await r.json().catch(()=>null);
+  if (!j?.imageUrl) { alert(j?.error || "imageUrl이 응답에 없습니다."); return; }
+  showImage(j.imageUrl);
+};
+
 </script>
 
   </body>

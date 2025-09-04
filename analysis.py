@@ -191,15 +191,18 @@ def _llm_describe_voice(features: VoiceFeatures) -> str:
 # (옵션) 우측 패널용 필드 생성기
 # ---------------------------
 def _build_visual_fields(features: VoiceFeatures) -> Dict[str, Any]:
-    """
-    프론트 우측 패널(EN prompt / Negative / Style Tags / Palette / Seed)에
-    기본값을 제공. 필요 없으면 그대로 무시해도 됩니다.
-    """
-    en_prompt = "A character portrait in soft ambient light, conveying an energetic yet calm presence; cinematic composition; subtle depth of field; clean lines, coherent anatomy."
-    negative = "low quality, blurry, extra limbs, distorted anatomy, deformed, text, watermark, logo, frame, oversaturated, underexposed, jpeg artifacts"
-    style_tags = "semi-realistic, cinematic, clean-lines"
-    palette = ["#A0C4FF", "#BDB2FF", "#FFC6FF", "#FFADAD"]  # 예시 팔레트
-    seed = "character portrait in soft ambient light"
+    en_prompt = (
+        "A character illustration in the style of Crayon Shin-chan, "
+        "playful, exaggerated cartoon features, thick bold outlines, "
+        "flat colors, childlike and humorous vibe"
+    )
+    negative = (
+        "realistic, photorealistic, 3d render, high detail, "
+        "distorted anatomy, extra limbs, text, watermark, logo"
+    )
+    style_tags = ["crayon shinchan", "cartoon", "flat-color", "bold-outline"]
+    palette = ["#FFD966", "#FF9ACB", "#FF8A00", "#19B5FE"]  # 짱구풍 밝은 색상 팔레트
+    seed = "playful Shinchan style cartoon portrait"
 
     return {
         "en_prompt": en_prompt,
@@ -209,25 +212,156 @@ def _build_visual_fields(features: VoiceFeatures) -> Dict[str, Any]:
         "seed": seed,
     }
 
+# === NEW: 느낌 기반 아바타 스타일 제안(정체성 단정 없음) ======================
+def _avatar_suggestions(features: VoiceFeatures) -> Dict[str, Any]:
+    """
+    음향 특징을 바탕으로 '아바타 스타일 힌트'를 제안합니다.
+    - 성별/나이 등 민감정보를 단정하지 않고, 디자인 가이드만 제공합니다.
+    """
+    f = features.to_dict()
+    f0_med = f.get("f0_med") or 0.0
+    f0_rng = f.get("f0_range") or 0.0
+    energy  = f.get("energy_mean") or 0.0
+    zcr     = f.get("zcr_mean") or 0.0
+    tempo   = f.get("tempo_bpm_like") or 0.0
+
+    # 기본값
+    hair_length = "medium"      # short / medium / long
+    face_shape  = "round"       # round / oval / heart / square
+    vibe        = "soft"        # soft / lively / bold / calm
+    extras      = []            # bangs, ribbon, headphones 등
+    colors      = ["#FFD966", "#FF9ACB", "#FF8A00", "#19B5FE"]  # 짱구풍 밝은 팔레트
+
+    # 피치 중심 제안(정체성 X, 단지 디자인 힌트)
+    if f0_med >= 220:
+        hair_length = "long"
+        face_shape  = "round"
+        vibe        = "soft"
+        extras.append("wispy bangs")
+    elif 150 <= f0_med < 220:
+        hair_length = "medium"
+        face_shape  = "oval"
+        vibe        = "lively"
+    else:
+        hair_length = "short"
+        face_shape  = "square"
+        vibe        = "calm"
+
+    # 피치 범위가 넓으면 표정/헤어 디테일을 조금 더
+    if f0_rng >= 80:
+        extras.append("expressive eyebrows")
+        vibe = "lively" if vibe == "soft" else vibe
+
+    # 에너지(볼륨감) 기반 색/소품
+    if energy >= 0.03:
+        extras.append("bold outline emphasis")
+    else:
+        colors = ["#FFF0B3", "#FFC8E7", "#FFD1A6", "#A7E2FF"]  # 더 파스텔
+
+    # ZCR 높으면 공기 섞인 호흡감 → 가벼운 앞머리/리본 같은 소품
+    if zcr >= 0.08:
+        extras.append("light ribbon")
+
+    # 템포가 빠르면 포즈를 경쾌하게
+    pose = "playful pose" if tempo and tempo >= 110 else "relaxed pose"
+
+    return {
+        "hair_length": hair_length,
+        "face_shape": face_shape,
+        "vibe": vibe,
+        "extras": extras,
+        "suggested_palette": colors,
+        "pose": pose,
+        # 프롬프트 합성용 짧은 문구
+        "avatar_hint_text": (
+            f"{hair_length} hair, {face_shape} face, {vibe} vibe, "
+            f"{pose}" + (", " + ", ".join(extras) if extras else "")
+        ),
+    }
+
+# === NEW: 성별 + 스타일 힌트 추측 ============================
+def _avatar_suggestions(features: VoiceFeatures) -> Dict[str, Any]:
+    f = features.to_dict()
+    f0_med = f.get("f0_med") or 0.0
+    f0_rng = f.get("f0_range") or 0.0
+    energy = f.get("energy_mean") or 0.0
+    tempo  = f.get("tempo_bpm_like") or 0.0
+
+    # ---- 기본값 ----
+    gender_guess = "neutral"   # male / female / neutral
+    hair_length = "medium"
+    face_shape  = "round"
+    vibe        = "soft"
+    pose        = "relaxed pose"
+    extras      = []
+
+    # ---- 성별 추측(아주 단순 규칙) ----
+    if f0_med >= 180:   # 평균 피치가 높은 경우
+        gender_guess = "female"
+        hair_length = "long"
+        face_shape  = "oval"
+        vibe        = "lively"
+    elif f0_med <= 140: # 평균 피치가 낮은 경우
+        gender_guess = "male"
+        hair_length = "short"
+        face_shape  = "square"
+        vibe        = "calm"
+    else:
+        gender_guess = "neutral"
+        hair_length = "medium"
+        face_shape  = "round"
+        vibe        = "soft"
+
+    # ---- 범위/에너지/리듬 기반 추가 조정 ----
+    if f0_rng >= 80:
+        extras.append("expressive eyebrows")
+        vibe = "energetic"
+    if energy >= 0.035:
+        extras.append("bold outline emphasis")
+    if tempo and tempo >= 110:
+        pose = "playful pose"
+        extras.append("motion lines")
+    elif tempo and tempo <= 90:
+        pose = "calm standing pose"
+
+    # ---- 최종 반환 ----
+    return {
+        "gender_guess": gender_guess,
+        "hair_length": hair_length,
+        "face_shape": face_shape,
+        "vibe": vibe,
+        "pose": pose,
+        "extras": extras,
+        "avatar_hint_text": (
+            f"{gender_guess} character, {hair_length} hair, {face_shape} face, "
+            f"{vibe} vibe, {pose}" + (", " + ", ".join(extras) if extras else "")
+        ),
+    }
+
+
+
 # ---------------------------
 # 외부에서 호출하는 메인 함수
 # ---------------------------
+# ✅ 항상 합성해서 반환: 프론트에서 체크박스 없이도 자동 반영
 def analyze_voice(file_path: str) -> Dict[str, Any]:
-    """
-    파일 경로를 받아:
-      1) 음성 특징 추출
-      2) LLM으로 자연어 설명 생성(규칙 매핑 없음)
-      3) (옵션) 우측 패널용 필드 포함
-    의 결과 딕셔너리를 반환합니다.
-    """
     features = _extract_features(file_path)
     description_ko = _llm_describe_voice(features)
 
-    result: Dict[str, Any] = {
+    # 짱구 스타일 프리셋 고정
+    visual = _build_visual_fields(features)
+    avatar = _avatar_suggestions(features)
+
+    # 프롬프트에 항상 합성
+    hint = avatar.get("avatar_hint_text")
+    if hint:
+        visual["en_prompt"] = f"{visual['en_prompt']}, {hint}"
+
+    return {
         "features": features.to_dict(),
         "description_ko": description_ko,
+        **visual,
+        "avatar": avatar,
     }
 
-    # 우측 패널용 필드(원하면 프론트에서 사용)
-    result.update(_build_visual_fields(features))
-    return result
+
