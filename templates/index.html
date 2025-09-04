@@ -2,7 +2,7 @@
 <html lang="ko">
   <head>
     <meta charset="utf-8" />
-    <title>Voice → (KO)설명 & (EN)프롬프트 → Image</title>
+    <title>Povi</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       :root { --orange:#ff8a00; --pink:#ff9acb; --blue:#19b5fe; --divider:#111; --text:#222; --muted:#888; --bg:#fafbfc; }
@@ -26,6 +26,7 @@
       .btn-secondary{background:#666;color:#fff}
       .btn-ghost{background:#eee;color:#333}
       .btn:disabled{opacity:.45;cursor:not-allowed}
+      .wave-box{display:none;margin-top:8px;border-radius:12px;overflow:hidden;background:#111;border:1px dashed #333}
       .audio-box{margin-top:10px;background:#fafafa;border:1px dashed #ccc;border-radius:12px;padding:10px;display:none}
       .image-panel{background:#fff;border:6px solid var(--blue);border-radius:16px;padding:18px;min-height:calc(100vh - 48px);display:flex;flex-direction:column}
       .image-panel h2{margin:0 0 8px;color:#1aa3e0;font-size:20px;font-weight:800}
@@ -53,9 +54,12 @@
           <!-- Row 2: 업로드(파일 선택만) -->
           <div class="controls2">
             <input type="file" id="file" accept="audio/*" />
-            <div style="display:flex;gap:8px">
-              <!-- 미리듣기/분석은 위 버튼을 그대로 사용 -->
-            </div>
+            <div></div><div></div>
+          </div>
+
+          <!-- Waveform canvas (녹음 중에만 표시) -->
+          <div class="wave-box" id="waveBox">
+            <canvas id="waveform" height="120" style="width:100%;height:120px;display:block"></canvas>
           </div>
 
           <div class="audio-box" id="audioBox">
@@ -68,7 +72,7 @@
           <h2>분석 후 설명</h2>
           <div id="koBox" class="ko-box">분석 결과가 여기에 표시됩니다.</div>
           <div class="controls" style="grid-template-columns:1fr; margin-top:12px">
-            <button id="btnToImage" class="btn btn-primary" disabled>짱구풍 이미지 생성</button>
+            <button id="btnToImage" class="btn btn-primary" disabled>이미지 생성</button>
           </div>
         </section>
       </div>
@@ -123,6 +127,12 @@
   let mediaRecorder, chunks=[];
   let currentBlob=null, lastBlobUrl=null, fileBlobUrl=null;
   let lastResult=null;
+
+  // Waveform globals
+  let audioCtx, analyser, sourceNode, dataArray, animationId;
+  const waveformCanvas = document.getElementById("waveform");
+  const waveBox = document.getElementById("waveBox");
+  const canvasCtx = waveformCanvas.getContext("2d");
 
   const btnRec=document.getElementById("btnRec");
   const btnStop=document.getElementById("btnStop");
@@ -186,13 +196,66 @@
     const data=normalizeResult(raw); lastResult=data; fillUI(data); setStatus("대기 중");
   }
 
+  // ===== Waveform drawing =====
+  function startWaveform(stream){
+    waveBox.style.display = "block";
+    // Resize canvas to actual CSS width
+    waveformCanvas.width = waveformCanvas.clientWidth;
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    sourceNode = audioCtx.createMediaStreamSource(stream);
+    sourceNode.connect(analyser);
+
+    analyser.fftSize = 2048;
+    const bufferLength = analyser.fftSize;
+    dataArray = new Uint8Array(bufferLength);
+
+    function draw(){
+      animationId = requestAnimationFrame(draw);
+      analyser.getByteTimeDomainData(dataArray);
+
+      canvasCtx.fillStyle = "#111";
+      canvasCtx.fillRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+
+      canvasCtx.lineWidth = 2;
+      canvasCtx.strokeStyle = "#ff8a00";
+      canvasCtx.beginPath();
+
+      const sliceWidth = waveformCanvas.width / bufferLength;
+      let x = 0;
+      for(let i=0;i<bufferLength;i++){
+        const v = dataArray[i] / 128.0;
+        const y = (v * waveformCanvas.height/2);
+        if(i===0) canvasCtx.moveTo(x, y);
+        else canvasCtx.lineTo(x, y);
+        x += sliceWidth;
+      }
+      canvasCtx.lineTo(waveformCanvas.width, waveformCanvas.height/2);
+      canvasCtx.stroke();
+    }
+    draw();
+  }
+
+  function stopWaveform(){
+    if(animationId) cancelAnimationFrame(animationId);
+    if(audioCtx){ audioCtx.close(); audioCtx = null; }
+    waveBox.style.display = "none";
+    // clear canvas
+    canvasCtx.clearRect(0,0,waveformCanvas.width,waveformCanvas.height);
+  }
+
+  // ===== Recording / UI events =====
   btnRec.onclick=async ()=>{
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    startWaveform(stream);   // start drawing
     chunks=[]; currentBlob=null; if(lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
     mediaRecorder=new MediaRecorder(stream,{mimeType:"audio/webm"});
     mediaRecorder.ondataavailable=(e)=>{ if(e.data.size) chunks.push(e.data); };
     mediaRecorder.onstop=()=>{
       currentBlob=new Blob(chunks,{type:"audio/webm"});
+      // stop waveform when recorder stops
+      stopWaveform();
       setStatus("녹음 완료 — 미리 듣기 가능");
       btnStop.disabled=true;
       updateActionButtons();
@@ -202,7 +265,12 @@
     btnStop.disabled=false;
     updateActionButtons();
   };
-  btnStop.onclick=()=>{ if(mediaRecorder && mediaRecorder.state!=="inactive"){ mediaRecorder.stop(); } };
+
+  btnStop.onclick=()=>{
+    if(mediaRecorder && mediaRecorder.state!=="inactive"){
+      mediaRecorder.stop();
+    }
+  };
 
   btnPreview.onclick=()=>{
     const src = getPreviewSource();
@@ -216,16 +284,15 @@
       lastBlobUrl = fileBlobUrl;
     }
     player.src = lastBlobUrl;
-    audioBox.style.display = "block"; // 미리 듣기 클릭 시에만 표시
+    audioBox.style.display = "block"; // show player only when previewing
     player.play().catch(()=>{});
   };
 
   btnAnalyze.onclick=analyzeCurrent;
 
   fileInput.addEventListener("change",()=>{
-    // 새 파일 선택 시 녹음분은 무시하고, 다시 미리듣기/분석 가능
     const f=fileInput.files?.[0];
-    if(f){ currentBlob=null; } // 업로드를 우선으로 사용
+    if(f){ currentBlob=null; } // prefer uploaded file when exists
     updateActionButtons();
   });
 
@@ -241,6 +308,104 @@
     if(!j?.imageUrl){ alert(j?.error || "imageUrl이 응답에 없습니다."); return; }
     showImage(j.imageUrl);
   };
+
+// ===== Enhancements: codec fallback, audio context resume, robust preview =====
+let gStream = null;
+
+// pick best mimeType
+function pickMime(){
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/ogg;codecs=opus"
+  ];
+  for (const m of candidates){
+    try { if (MediaRecorder.isTypeSupported(m)) return m; } catch {}
+  }
+  return "";
+}
+
+// ensure audio context is running (some browsers start suspended)
+async function ensureCtx(){
+  try {
+    if (audioCtx && audioCtx.state === "suspended") {
+      await audioCtx.resume();
+    }
+  } catch(e){/*noop*/}
+}
+document.addEventListener("visibilitychange", ensureCtx);
+
+// robust play helper
+async function safePlay(el){
+  try{
+    el.volume = 1;
+    el.muted = false;
+    el.pause();
+    el.load();
+    await el.play();
+  }catch(e){
+    // show a friendly hint
+    console.warn("Autoplay prevented or play failed:", e);
+    setStatus("재생 버튼(▶)을 누르거나 시스템 볼륨/출력 장치를 확인하세요.");
+  }
+}
+
+// Resize canvas to container width
+(function(){
+  const ro = new ResizeObserver(()=>{
+    const w = waveformCanvas.clientWidth || 600;
+    waveformCanvas.width = w;
+  });
+  ro.observe(waveformCanvas);
+})();
+
+// override record handlers to keep the gStream and use codec fallback
+btnRec.onclick = async ()=>{
+  const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+  gStream = stream;
+  await ensureCtx();
+  startWaveform(stream);
+  chunks=[]; currentBlob=null; if(lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+  const mime = pickMime();
+  try{
+    mediaRecorder=new MediaRecorder(stream, mime ? {mimeType: mime} : undefined);
+  }catch(e){
+    mediaRecorder=new MediaRecorder(stream);
+  }
+  mediaRecorder.ondataavailable=(e)=>{ if(e.data.size) chunks.push(e.data); };
+  mediaRecorder.onstop=()=>{
+    const blobType = mime || "audio/webm";
+    currentBlob=new Blob(chunks,{type: blobType});
+    stopWaveform();
+    setStatus("녹음 완료 — 미리 듣기 가능");
+    btnStop.disabled=true;
+    updateActionButtons();
+    // stop input tracks after capture
+    try{ gStream.getTracks().forEach(t=>t.stop()); }catch{}
+    gStream = null;
+  };
+  mediaRecorder.start();
+  setStatus("녹음 중…");
+  btnStop.disabled=false;
+  updateActionButtons();
+};
+
+btnPreview.onclick=()=>{
+  const src = getPreviewSource();
+  if(!src){ alert("녹음하거나 파일을 선택하세요."); return; }
+  if(lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+  if(src.type === "record"){
+    lastBlobUrl = URL.createObjectURL(src.blob);
+  } else {
+    if(fileBlobUrl) URL.revokeObjectURL(fileBlobUrl);
+    fileBlobUrl = URL.createObjectURL(src.file);
+    lastBlobUrl = fileBlobUrl;
+  }
+  player.src = lastBlobUrl;
+  audioBox.style.display = "block";
+  safePlay(player);
+};
 </script>
   </body>
 </html>
