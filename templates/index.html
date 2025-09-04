@@ -227,159 +227,212 @@
     </div>
 
     <script>
-      // ------- 상태 -------
-      let mediaRecorder, chunks = [];
-      let lastResult = null;
+  // ====== (필요시) 백엔드가 다른 포트/도메인일 때만 설정 ======
+  // 같은 오리진(예: index.html도 8000에서 서빙)이면 빈 문자열 유지
+  const API_BASE = ""; // 예: "http://127.0.0.1:8000"
 
-      // ------- 유틸 -------
-      function setStatus(msg) {
-        document.getElementById("recStatus").textContent = msg;
+  // ---------- 공통 유틸 ----------
+  function normalizeArray(val) {
+    if (Array.isArray(val)) return val;
+    if (val == null) return [];
+    if (typeof val === "string") {
+      try { return normalizeArray(JSON.parse(val)); } catch {}
+      return val.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    }
+    if (typeof val === "object") {
+      const out = [];
+      for (const k in val) {
+        const v = val[k];
+        if (Array.isArray(v)) out.push(...v.map(String));
+        else if (v != null) out.push(String(v));
+      }
+      return out;
+    }
+    return [String(val)];
+  }
+
+  function normalizeTags(val) { return normalizeArray(val); }
+
+  // 응답 키 표준화(루트/중첩 & snake/camel 혼용 방지)
+  function normalizeResult(raw) {
+    const payload = raw?.result || raw?.data || raw || {};
+    const en_prompt =
+      payload.en_prompt ?? payload.enPrompt ?? payload.prompt_en ?? payload.prompt ?? "";
+    const negative_prompt =
+      payload.negative_prompt ?? payload.negativePrompt ?? payload.negative ?? "";
+
+    return {
+      ok: raw?.ok ?? true,
+      // 표시용
+      description: payload.description ?? "",
+      ko_explanation: payload.ko_explanation ?? payload.koExplanation ?? "",
+      // 프롬프트 표준 키
+      en_prompt: en_prompt,
+      negative_prompt: negative_prompt,
+      // 태그/팔레트 표준화
+      style_tags: normalizeArray(payload.style_tags ?? payload.styleTags ?? payload.tags ?? payload.tag ?? payload.keywords),
+      palette: normalizeArray(payload.palette),
+      seed_idea: payload.seed_idea ?? payload.seedIdea ?? "",
+      features: payload.features ?? null,
+    };
+  }
+
+  // ---------- 상태 ----------
+  let mediaRecorder, chunks = [];
+  let lastResult = null;
+
+  // ---------- UI 유틸 ----------
+  function setStatus(msg) {
+    document.getElementById("recStatus").textContent = msg;
+  }
+
+  function showImage(url) {
+    const wrap = document.getElementById("imageWrap");
+    wrap.innerHTML = "";
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "result";
+    wrap.appendChild(img);
+  }
+
+  function debugPromptIfNeeded(res) {
+    const box = document.getElementById("promptDebug");
+    try {
+      const en = res?.en_prompt || "";
+      if (!en) { box.style.display = "none"; return; }
+
+      // negative는 세 가지 케이스 모두 고려
+      const neg = res?.negative_prompt || res?.negative || res?.negativePrompt || "";
+      const style = normalizeArray(res?.style_tags);
+      const palette = normalizeArray(res?.palette);
+      const seed = res?.seed_idea || "";
+      const features = res?.features;
+
+      let text = "[EN prompt]\n" + en;
+      if (neg) text += "\n\n[Negative]\n" + neg;
+      if (style.length) text += "\n\n[Style Tags]\n" + style.join(", ");
+      if (palette.length) text += "\n\n[Palette]\n" + palette.join(" ");
+      if (seed) text += "\n\n[Seed]\n" + seed;
+      if (features && typeof features === "object") {
+        text += "\n\n[Features]\n" + JSON.stringify(features, null, 2);
       }
 
-      // (기존) 화면 갱신 유틸 — 유지
-      function showKo(description, ko_explanation, tags = []) {
-        const text = ko_explanation || description || "설명이 비어 있습니다.";
-        document.getElementById("koBox").textContent = text;
-        const tg = document.getElementById("tags");
-        tg.innerHTML = "";
-        (tags || []).forEach((t) => {
-          const s = document.createElement("span");
-          s.className = "tag";
-          s.textContent = t;
-          tg.appendChild(s);
-        });
-        document.getElementById("btnToImage").disabled = !lastResult?.en_prompt;
-      }
-      function showImage(url) {
-        const wrap = document.getElementById("imageWrap");
-        wrap.innerHTML = "";
-        const img = document.createElement("img");
-        img.src = url;
-        img.alt = "result";
-        wrap.appendChild(img);
-      }
-      function debugPromptIfNeeded(res) {
-        const box = document.getElementById("promptDebug");
-        if (!res?.en_prompt) {
-          box.style.display = "none";
-          return;
-        }
-        box.style.display = "block";
-        box.textContent =
-          "[EN prompt]\n" + res.en_prompt +
-          (res.negative_prompt ? "\n\n[Negative]\n" + res.negative_prompt : "") +
-          (res.style_tags?.length ? "\n\n[Style Tags]\n" + res.style_tags.join(", ") : "") +
-          (res.palette?.length ? "\n\n[Palette]\n" + res.palette.join(" ") : "") +
-          (res.seed_idea ? "\n\n[Seed]\n" + res.seed_idea : "") +
-          (res.features ? "\n\n[Features]\n" + JSON.stringify(res.features, null, 2) : "");
-      }
+      box.style.display = "block";
+      box.textContent = text;
+    } catch (e) {
+      console.warn("debugPromptIfNeeded failed:", e);
+      box.style.display = "none";
+    }
+  }
 
-      // (신규) 응답 일괄 반영 — 추가
-      function fillUI(data){
-        // 1) ko_explanation 우선
-        const ko = (data.ko_explanation || "").trim();
-        document.getElementById("koBox").textContent =
-          ko || (data.description || "설명을 생성하지 못했습니다.");
+  function fillUI(normalized) {
+    const ko = (normalized.ko_explanation || "").trim();
+    document.getElementById("koBox").textContent =
+      ko || (normalized.description || "설명을 생성하지 못했습니다.");
 
-        // 2) 태그 — style_tags 우선, 없으면 tags
-        const tg = document.getElementById("tags");
-        tg.innerHTML = "";
-        const tags =
-          (data.style_tags && data.style_tags.length ? data.style_tags : data.tags) || [];
-        tags.forEach((t) => {
-          const s = document.createElement("span");
-          s.className = "tag";
-          s.textContent = t;
-          tg.appendChild(s);
-        });
+    const tg = document.getElementById("tags");
+    tg.innerHTML = "";
+    normalizeArray(normalized.style_tags).forEach((t) => {
+      const s = document.createElement("span");
+      s.className = "tag";
+      s.textContent = t;
+      tg.appendChild(s);
+    });
 
-        // 3) 디버그(프롬프트+피처)
-        debugPromptIfNeeded(data);
+    debugPromptIfNeeded(normalized);
+    document.getElementById("btnToImage").disabled = !normalized.en_prompt;
+  }
 
-        // 4) 버튼 활성화
-        document.getElementById("btnToImage").disabled = !data.en_prompt;
-      }
+  // ---------- 분석 ----------
+  async function analyzeBlob(blob) {
+    const fd = new FormData();
+    fd.append("file", new File([blob], "record.webm", { type: "audio/webm" }));
 
-      async function analyzeBlob(blob) {
-        const fd = new FormData();
-        fd.append("file", new File([blob], "record.webm", { type: "audio/webm" }));
+    const r = await fetch(`${API_BASE}/analyze_api`, { method: "POST", body: fd });
+    const raw = await r.json().catch(() => null);
+    if (!raw || raw.ok === false) {
+      alert(raw?.error || "분석 실패");
+      return;
+    }
+    const data = normalizeResult(raw);
+    lastResult = data;
+    fillUI(data);
+  }
 
-        const r = await fetch("/analyze_api", { method: "POST", body: fd });
-        const data = await r.json();
-        if (!data.ok) {
-          alert(data.error || "분석 실패");
-          return;
-        }
+  // ---------- 녹음 ----------
+  document.getElementById("btnRec").onclick = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    chunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(chunks, { type: "audio/webm" });
+      setStatus("분석 중…");
+      await analyzeBlob(blob);
+      setStatus("대기 중");
+    };
+    mediaRecorder.start();
+    setStatus("녹음 중…");
+    document.getElementById("btnStop").disabled = false;
+  };
 
-        lastResult = data;
-        // 기존 함수 유지하되, 실제 반영은 fillUI로 일원화
-        // showKo(data.description, data.ko_explanation, data.tags);
-        // debugPromptIfNeeded(data);
-        fillUI(data);
-      }
+  document.getElementById("btnStop").onclick = () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+      document.getElementById("btnStop").disabled = true;
+    }
+  };
 
-      // ------- 녹음 -------
-      document.getElementById("btnRec").onclick = async () => {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        chunks = [];
-        mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-        mediaRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-        mediaRecorder.onstop = async () => {
-          const blob = new Blob(chunks, { type: "audio/webm" });
-          setStatus("분석 중…");
-          await analyzeBlob(blob);
-          setStatus("대기 중");
-        };
-        mediaRecorder.start();
-        setStatus("녹음 중…");
-        document.getElementById("btnStop").disabled = false;
-      };
-      document.getElementById("btnStop").onclick = () => {
-        if (mediaRecorder && mediaRecorder.state !== "inactive") {
-          mediaRecorder.stop();
-          document.getElementById("btnStop").disabled = true;
-        }
-      };
+  // ---------- 업로드 분석 ----------
+  document.getElementById("btnUpload").onclick = async () => {
+    const f = document.getElementById("file").files[0];
+    if (!f) { alert("파일을 선택하세요"); return; }
+    const fd = new FormData(); fd.append("file", f);
+    setStatus("분석 중…");
+    const r = await fetch(`${API_BASE}/analyze_api`, { method: "POST", body: fd });
+    const raw = await r.json().catch(()=>null);
+    if (!raw || raw.ok === false) {
+      alert(raw?.error || "분석 실패");
+      setStatus("대기 중");
+      return;
+    }
+    const data = normalizeResult(raw);
+    lastResult = data;
+    fillUI(data);
+    setStatus("대기 중");
+  };
 
-      // ------- 업로드 -------
-      document.getElementById("btnUpload").onclick = async () => {
-        const f = document.getElementById("file").files[0];
-        if (!f) { alert("파일을 선택하세요"); return; }
-        const fd = new FormData(); fd.append("file", f);
-        setStatus("분석 중…");
-        const r = await fetch("/analyze_api", { method: "POST", body: fd });
-        const data = await r.json();
-        if (!data.ok) {
-          alert(data.error || "분석 실패");
-          setStatus("대기 중");
-          return;
-        }
-        lastResult = data;
-        // showKo(data.description, data.ko_explanation, data.tags);
-        // debugPromptIfNeeded(data);
-        fillUI(data);
-        setStatus("대기 중");
-      };
+  // ---------- 이미지 생성 ----------
+  document.getElementById("btnToImage").onclick = async () => {
+    if (!lastResult?.en_prompt) {
+      alert("먼저 분석을 완료하세요.");
+      return;
+    }
+    const r = await fetch(`${API_BASE}/image/render`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: lastResult.en_prompt,
+        // 서버가 어떤 키를 쓰든 여기서 통일해서 보냄
+        negativePrompt: lastResult.negative_prompt,
+        width: 768,
+        height: 768,
+      }),
+    });
 
-      // ------- 이미지 생성 -------
-      document.getElementById("btnToImage").onclick = async () => {
-        if (!lastResult?.en_prompt) {
-          alert("먼저 분석을 완료하세요.");
-          return;
-        }
-        const r = await fetch("/image/render", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt: lastResult.en_prompt,
-            negativePrompt: lastResult.negative_prompt,
-            width: 768,
-            height: 768,
-          }),
-        });
-        const j = await r.json();
-        showImage(j.imageUrl);
-      };
-    </script>
+    if (!r.ok) {
+      const msg = await r.text().catch(()=> "");
+      alert(`Image API ${r.status}\n${msg || "Request failed"}`);
+      return;
+    }
+    const j = await r.json().catch(()=>null);
+    if (!j?.imageUrl) {
+      alert(j?.error || "imageUrl이 응답에 없습니다.");
+      return;
+    }
+    showImage(j.imageUrl);
+  };
+</script>
+
   </body>
 </html>

@@ -2,16 +2,17 @@
 from pathlib import Path
 import os
 import uuid
-import subprocess
-from typing import Dict
+import base64
+from typing import Dict, Optional
 
-from fastapi import FastAPI, Request, UploadFile, File, Body
+from fastapi import FastAPI, Request, UploadFile, File, Body, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 
 from dotenv import load_dotenv
+from pydantic import BaseModel
 from openai import OpenAI
 
 from analysis import analyze_voice
@@ -22,7 +23,7 @@ from analysis import analyze_voice
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates"
-RESULT_DIR = STATIC_DIR / "results"   # (필요 시) 결과 산출물 저장
+RESULT_DIR = STATIC_DIR / "results"   # 이미지 등 산출물 저장
 UPLOAD_DIR = BASE_DIR / "uploads"     # 업로드/임시 오디오 저장
 
 if RESULT_DIR.exists() and not RESULT_DIR.is_dir():
@@ -37,7 +38,10 @@ if not UPLOAD_DIR.exists():
 # ============================
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # (선택) 사용 중이면 쓰고, 아니면 무시됨
+
+# OpenAI 클라이언트
+client = OpenAI()  # OPENAI_API_KEY 필요
 
 # ============================
 # FastAPI 앱
@@ -47,12 +51,12 @@ app = FastAPI(title="Voice → Description → (Prompt)")
 # CORS(필요 시 도메인 제한)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # 배포시 필요한 도메인만 허용 권장
+    allow_origins=["*"],   # 배포 시 특정 도메인으로 제한 권장
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 정적/템플릿 (프론트 사용 시)
+# 정적/템플릿
 if not STATIC_DIR.exists():
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -60,9 +64,31 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR)) if TEMPLATES_DIR.exists() else None
 
 # ============================
+# 유틸
+# ============================
+def _clamp(v: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, v))
+
+def save_b64_png(b64: str) -> str:
+    """b64 PNG를 파일로 저장하고 /static 경로 URL 반환"""
+    fname = f"{uuid.uuid4().hex}.png"
+    out_path = RESULT_DIR / fname
+    out_path.write_bytes(base64.b64decode(b64))
+    return f"/static/results/{fname}"
+
+# ============================
+# 스키마
+# ============================
+class ImageRequest(BaseModel):
+    prompt: str
+    negativePrompt: Optional[str] = None
+    negative_prompt: Optional[str] = None
+    width: int = 1024
+    height: int = 1024
+
+# ============================
 # 라우트
 # ============================
-
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     if not templates:
@@ -81,7 +107,7 @@ async def analyze_upload(file: UploadFile = File(...)):
     with save_path.open("wb") as f:
         f.write(await file.read())
 
-    # 2) 분석
+    # 2) 분석 (사용자 정의 함수: analysis.py의 analyze_voice)
     analysis = analyze_voice(str(save_path))
 
     # 3) 응답(JSON)
@@ -102,13 +128,58 @@ async def analyze_upload(file: UploadFile = File(...)):
     }
     return JSONResponse(payload)
 
-# --- 추가: /analyze_api 경로도 /analyze_upload와 동일하게 동작하도록 별칭 라우트 ---
+# /analyze_api 별칭 (프론트 기존 코드 호환)
 @app.post("/analyze_api")
 async def analyze_api(file: UploadFile = File(...)):
     return await analyze_upload(file)
-# --- 추가 끝 ---
 
+def _pick_openai_size(w: int, h: int) -> str:
+    """
+    gpt-image-1 이 허용하는 사이즈로 변환:
+    - 정사각형 → 1024x1024
+    - 세로가 더 길면 → 1024x1536
+    - 가로가 더 길면 → 1536x1024
+    """
+    if w <= 0 or h <= 0:
+        return "1024x1024"
+    if w == h:
+        return "1024x1024"
+    return "1024x1536" if h > w else "1536x1024"
+
+@app.post("/image/render")
+async def image_render(req: ImageRequest):
+    if not req.prompt or not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    # 기존 _clamp 제거/유지 상관없음. 허용 사이즈로 변환만 확실히 수행
+    size_str = _pick_openai_size(req.width, req.height)
+
+    neg = req.negative_prompt or req.negativePrompt
+    final_prompt = req.prompt if not neg else f"{req.prompt}\nNegative: {neg}"
+
+    try:
+        resp = client.images.generate(
+            model="gpt-image-1",
+            prompt=final_prompt,
+            size=size_str,     # ← 여기!
+            n=1,
+            quality="high",
+        )
+        b64 = resp.data[0].b64_json
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"OpenAI image generation failed: {e}")
+
+    url = save_b64_png(b64)
+    return {"imageUrl": url}
 # 헬스체크
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+# ============================
+# 로컬 실행
+# ============================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
