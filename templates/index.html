@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>Voice → (KO)설명 & (EN)프롬프트 → Image</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --orange: #ff8a00;
+        --pink: #ff9acb;
+        --blue: #19b5fe;
+        --divider: #111;
+        --text: #222;
+        --muted: #888;
+        --bg: #fafbfc;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .page {
+        display: grid;
+        grid-template-columns: 1fr 6px 1.2fr;
+        gap: 0;
+        min-height: 100vh;
+      }
+      .divider { background: var(--divider); width: 6px; height: 100%; }
+      .left, .right { padding: 24px; }
+      .panel {
+        background: #fff; border: 4px solid var(--orange); border-radius: 12px; padding: 18px;
+      }
+      .panel h2 { margin: 0 0 12px; color: var(--orange); font-weight: 700; font-size: 18px; }
+      .panel-pink {
+        background: #fff; border: 4px solid var(--pink); border-radius: 12px; padding: 18px; margin-top: 32px;
+        min-height: 380px; display: flex; flex-direction: column;
+      }
+      .panel-pink h2 { margin: 0 0 12px; color: var(--pink); font-weight: 700; font-size: 18px; }
+      .ko-box {
+        flex: 1; border: 2px dashed #bbb; border-radius: 8px; color: #d45a9e; padding: 16px; line-height: 1.6; white-space: pre-wrap;
+      }
+      .tags { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+      .tag { background: #ffe7f3; color: #bf4c8f; border: 1px solid #ffc8e7; border-radius: 999px; padding: 4px 10px; font-size: 12px; }
+      .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .row + .row { margin-top: 8px; }
+      button, .file {
+        appearance: none; border: 0; border-radius: 10px; padding: 10px 14px; font-weight: 600; cursor: pointer; background: #222; color: #fff;
+      }
+      button.secondary { background: #666; }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      small { color: var(--muted); }
+      .image-panel {
+        background: #fff; border: 6px solid var(--blue); border-radius: 12px; padding: 18px; min-height: calc(100vh - 48px);
+        display: flex; flex-direction: column;
+      }
+      .image-panel h2 { margin: 0 0 8px; color: #1aa3e0; font-size: 18px; font-weight: 700; }
+      .image-wrap { flex: 1; display: grid; place-items: center; border-radius: 10px; background: #f5fbff; overflow: hidden; }
+      .image-wrap img { max-width: 100%; height: auto; display: block; }
+      @media (max-width: 980px) {
+        .page { grid-template-columns: 1fr; }
+        .divider { display: none; }
+        .image-panel { min-height: auto; margin-top: 18px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <!-- 좌측 -->
+      <div class="left">
+        <!-- 녹음/업로드 등(오렌지 박스) -->
+        <section class="panel">
+          <h2>녹음 / 분석 등</h2>
+          <div class="row">
+            <button id="btnRec">● 녹음 시작</button>
+            <button id="btnStop" class="secondary" disabled>■ 녹음 정지</button>
+            <small id="recStatus">대기 중</small>
+          </div>
+          <!-- 미리듣기 오디오 -->
+          <div class="row" style="width:100%;">
+            <audio id="previewAudio" controls style="width:100%; display:none;"></audio>
+          </div>
+          <div class="row">
+            <input type="file" id="file" class="file" accept="audio/*" />
+            <button id="btnPreview" class="secondary" disabled>▷ 미리 듣기</button>
+            <button id="btnUpload" disabled>분석하기</button>
+          </div>
+        </section>
+
+        <!-- 분석 후 설명(핑크 박스) -->
+        <section class="panel-pink">
+          <h2>분석 후 설명 나오는 곳</h2>
+          <div id="koBox" class="ko-box">분석 결과가 여기에 표시됩니다.</div>
+          <div class="tags" id="tags"></div>
+
+          <div class="row" style="margin-top:12px;">
+            <button id="btnToImage" disabled>이미지 생성</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- 중앙 구분선 -->
+      <div class="divider"></div>
+
+      <!-- 우측: 이미지 -->
+      <div class="right">
+        <section class="image-panel">
+          <h2>이미지 나오는 화면</h2>
+          <div class="image-wrap" id="imageWrap">
+            <span style="color:#8ad2ff">아직 생성된 이미지가 없습니다</span>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      // ------- 상태 -------
+      let mediaRecorder, chunks = [];
+      let lastResult = null;
+      let latestBlob = null;    // 녹음 결과(Blob)
+      let latestFile = null;    // 업로드 파일(File)
+      let lastObjectUrl = null; // Blob/File 미리듣기 URL 정리용
+
+      // ------- 유틸 -------
+      function setStatus(msg){ document.getElementById('recStatus').textContent = msg; }
+      function getPreviewEl(){ return document.getElementById('previewAudio'); }
+
+      // URL 소스로 미리듣기 세팅
+      function setPreviewUrl(url){
+        const a = getPreviewEl();
+        if (a.srcObject) a.srcObject = null;      // 실시간 모니터 해제
+        if (lastObjectUrl){ try{ URL.revokeObjectURL(lastObjectUrl); }catch(e){} lastObjectUrl = null; }
+        if (url){
+          a.src = url; a.style.display = 'block';
+          a.play?.().catch(()=>{});               // 자동재생 제한은 사용자가 직접 눌러도 됨
+        } else {
+          a.removeAttribute('src'); a.style.display = 'none';
+        }
+      }
+      function setPreviewFromBlob(blob){
+        const url = URL.createObjectURL(blob);
+        lastObjectUrl = url;
+        setPreviewUrl(url);
+      }
+      function setPreviewFromFile(file){
+        const url = URL.createObjectURL(file);
+        lastObjectUrl = url;
+        setPreviewUrl(url);
+      }
+
+      function showKo(description, ko_explanation, tags=[]){
+        const text = ko_explanation || description || '설명이 비어 있습니다.';
+        document.getElementById('koBox').textContent = text;
+        const tg = document.getElementById('tags');
+        tg.innerHTML = '';
+        (tags || []).forEach(t=>{
+          const s = document.createElement('span'); s.className = 'tag'; s.textContent = t; tg.appendChild(s);
+        });
+        document.getElementById('btnToImage').disabled = !lastResult?.en_prompt;
+      }
+      function showImage(url){
+        const wrap = document.getElementById('imageWrap');
+        wrap.innerHTML = '';
+        const img = document.createElement('img');
+        img.src = url; img.alt = 'result';
+        wrap.appendChild(img);
+      }
+
+      async function analyzeBlob(blob){
+        const fd = new FormData();
+        fd.append('file', new File([blob], 'record.webm', {type: 'audio/webm'}));
+        const r = await fetch('/analyze_api', { method:'POST', body: fd });
+        const data = await r.json();
+        if(!data.ok){ alert(data.error || '분석 실패'); return; }
+        lastResult = data;
+        showKo(data.description, data.ko_explanation, data.tags);
+        // (선택) 서버 저장 미리듣기 URL을 돌려줄 땐 다음 줄 활성화
+        // if (data.preview_url) setPreviewUrl(data.preview_url);
+      }
+
+      // ------- 녹음 -------
+      document.getElementById('btnRec').onclick = async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+        chunks = [];
+        mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
+        mediaRecorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(chunks, {type:'audio/webm'});
+          // 자동 분석 제거 → 미리듣기/분석하기 버튼 활성화
+          latestBlob = blob; latestFile = null;
+          document.getElementById('btnPreview').disabled = false;
+          document.getElementById('btnUpload').disabled = false;
+          setStatus('미리듣기 가능');
+        };
+        mediaRecorder.start();
+        setStatus('녹음 중…');
+        document.getElementById('btnStop').disabled = false;
+
+        // (선택) 녹음 중 실시간 모니터 (에코 방지 위해 헤드폰 권장)
+        try {
+          const a = getPreviewEl();
+          a.srcObject = stream; a.style.display = 'block';
+          a.play?.().catch(()=>{});
+        } catch(e){}
+      };
+      document.getElementById('btnStop').onclick = () => {
+        if(mediaRecorder && mediaRecorder.state !== 'inactive'){
+          mediaRecorder.stop();
+          document.getElementById('btnStop').disabled = true;
+        }
+      };
+
+      // ------- 업로드 -------
+      // 파일 선택 시: 분석 전 미리듣기 준비
+      document.getElementById('file').addEventListener('change', (e)=>{
+        const f = e.target.files[0];
+        latestFile = f || null;
+        if (f){
+          latestBlob = null;
+          document.getElementById('btnPreview').disabled = false;
+          document.getElementById('btnUpload').disabled = false;
+          setStatus('미리듣기 가능');
+        } else {
+          document.getElementById('btnPreview').disabled = true;
+          document.getElementById('btnUpload').disabled = true;
+        }
+      });
+
+      // 미리 듣기 버튼: 녹음본 → 업로드 파일 순서로 재생
+      document.getElementById('btnPreview').onclick = () => {
+        if (latestBlob){ setPreviewFromBlob(latestBlob); return; }
+        if (latestFile){ setPreviewFromFile(latestFile); return; }
+        alert('미리 들을 음성이 없습니다. 녹음하거나 파일을 선택해 주세요.');
+      };
+
+      // 분석하기 버튼: 업로드 파일 우선, 없으면 녹음본 분석
+      document.getElementById('btnUpload').onclick = async () => {
+        const fd = new FormData();
+        if (latestFile){
+          fd.append('file', latestFile);
+        } else if (latestBlob){
+          fd.append('file', new File([latestBlob], 'record.webm', {type:'audio/webm'}));
+        } else {
+          alert('분석할 음성이 없습니다. 녹음하거나 파일을 선택해 주세요.');
+          return;
+        }
+        setStatus('분석 중…');
+        const r = await fetch('/analyze_api', { method:'POST', body: fd });
+        const data = await r.json();
+        if(!data.ok){ alert(data.error || '분석 실패'); setStatus('대기 중'); return; }
+        lastResult = data;
+        showKo(data.description, data.ko_explanation, data.tags);
+        setStatus('대기 중');
+      };
+
+      // ------- 이미지 생성 -------
+      document.getElementById('btnToImage').onclick = async () => {
+        if(!lastResult?.en_prompt){ alert('먼저 분석을 완료하세요.'); return; }
+        const r = await fetch('/image/render', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            prompt: lastResult.en_prompt,
+            negativePrompt: lastResult.negative_prompt,
+            width: 768, height: 768
+          })
+        });
+        const j = await r.json();
+        showImage(j.imageUrl);
+      };
+    </script>
+  </body>
+</html>
